@@ -8,6 +8,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "d3d12_xs_rootsig.h"
 #include "shims.h"
 
 namespace {
@@ -326,6 +327,45 @@ void check_directly_indexed_flags(SerializeFn serialize, DeserializeFn deseriali
 
 }  // namespace
 
+// The shader model 6.6 heap-directly-indexed flags (0x400, 0x800), which Windows 10's d3d12.dll refuses: the shim
+// serializes them anyway (taken out for the host, written back into RTS0), so the blob's flags word carries them and
+// its container hash is valid.
+void test_heap_directly_indexed_flags(SerializeFn serialize) {
+    D3D12_ROOT_PARAMETER1 constants{};
+    constants.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+    constants.Constants.Num32BitValues = 4;
+    constants.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    D3D12_VERSIONED_ROOT_SIGNATURE_DESC desc{};
+    desc.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+    desc.Desc_1_1.NumParameters = 1;
+    desc.Desc_1_1.pParameters = &constants;
+    desc.Desc_1_1.Flags = static_cast<D3D12_ROOT_SIGNATURE_FLAGS>(0x400 | 0x800 | 0x1);
+    ComPtr<ID3DBlob> blob, error;
+    require_success(serialize(&desc, &blob, &error), "serialize heap-directly-indexed flags via shim");
+    const auto* bytes = static_cast<const std::uint8_t*>(blob->GetBufferPointer());
+    const SIZE_T size = blob->GetBufferSize();
+    require(size >= 36 && std::memcmp(bytes, "DXBC", 4) == 0, "heap-indexed blob is a DXBC container");
+    std::uint32_t count = 0;
+    std::memcpy(&count, bytes + 28, 4);
+    bool found = false;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        std::uint32_t off = 0;
+        std::memcpy(&off, bytes + 32 + 4 * i, 4);
+        if (std::memcmp(bytes + off, "RTS0", 4) != 0) continue;
+        std::uint32_t flags = 0;
+        std::memcpy(&flags, bytes + off + 8 + 20, 4);
+        require(flags == (0x400u | 0x800u | 0x1u), "RTS0 flags keep 0x400 | 0x800");
+        found = true;
+    }
+    require(found, "heap-indexed blob has an RTS0 chunk");
+    std::uint32_t hash[4];
+    rt::d3d12_xs::dxbc_checksum(bytes, size, hash);
+    constexpr std::uint8_t kZero[16] = {};
+    require(std::memcmp(bytes + 4, kZero, 16) == 0 || std::memcmp(bytes + 4, hash, 16) == 0,
+            "heap-indexed blob hash is valid");
+    std::printf("heap-directly-indexed flags serialized\n");
+}
+
 int main() {
     try {
         const auto serialize = reinterpret_cast<SerializeFn>(
@@ -333,6 +373,7 @@ int main() {
         const auto deserialize = reinterpret_cast<DeserializeFn>(
             rt::shims::find("d3d12_xs.dll", "D3D12CreateRootSignatureDeserializer"));
         require(serialize && deserialize, "resolve both root signature imports from the shim registry");
+        test_heap_directly_indexed_flags(serialize);
 
         ComPtr<IDXGIFactory4> factory;
         ComPtr<IDXGIAdapter> adapter;
