@@ -50,6 +50,13 @@ void copy_root_signature_desc_clear_xbox_flags(const D3D12_ROOT_SIGNATURE_DESC& 
 // non-zero incoming DXBC hash that does not match the input bytes.
 bool copy_rts0_blob_clear_xbox_flags(const void* data, size_t size, std::vector<uint8_t>& out);
 
+// Sets `bits` in the RTS0 flags of a serialized root signature in place and re-signs the container (an all-zero hash
+// stays zero). The serializer path uses it for flags the host d3d12.dll does not know yet (Windows 10's predates the
+// shader model 6.6 heap-directly-indexed flags 0x400/0x800): the description is serialized without them and they are
+// put back, so CreateRootSignature still sees them. Returns false, leaving the blob unchanged, when it is not a
+// well-formed DXBC container with an RTS0 chunk.
+bool set_rts0_flag_bits(void* data, size_t size, uint32_t bits);
+
 // The DXBC container hash of `blob` (bytes 20..size), as stored at bytes 4..19. Zeroes `out` when `blob` is null,
 // `size < 20`, or the hashed payload exceeds the 32-bit bit-count limit.
 void dxbc_checksum(const uint8_t* blob, size_t size, uint32_t out[4]);

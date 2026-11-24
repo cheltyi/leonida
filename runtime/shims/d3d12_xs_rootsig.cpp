@@ -364,4 +364,39 @@ HRESULT serialize_legacy_keeping_heap_flags(LegacySerializeFn fn, const D3D12_RO
     return finish_retry(true, again, flags, first, first_error, plain, plain_error, blob, error);
 }
 
+bool set_rts0_flag_bits(void* data, size_t size, uint32_t bits) {
+    if (!data || size < 36 || size - 20 > 0x1FFFFFFFu) return false;
+    auto* bytes = static_cast<uint8_t*>(data);
+    if (std::memcmp(bytes, "DXBC", 4) != 0) return false;
+    uint32_t total_size = 0;
+    std::memcpy(&total_size, bytes + 24, sizeof(total_size));
+    if (total_size != size) return false;
+    uint32_t chunk_count = 0;
+    std::memcpy(&chunk_count, bytes + 28, sizeof(chunk_count));
+    if (chunk_count == 0 || chunk_count > 16 || static_cast<size_t>(chunk_count) * 4 > size - 32) return false;
+    const size_t min_chunk_off = 32 + static_cast<size_t>(chunk_count) * 4;
+    for (uint32_t i = 0; i < chunk_count; ++i) {
+        uint32_t off = 0;
+        std::memcpy(&off, bytes + 32 + static_cast<size_t>(i) * 4, sizeof(off));
+        if (off < min_chunk_off || off > size || size - off < 8) return false;
+        uint32_t chunk_size = 0;
+        std::memcpy(&chunk_size, bytes + off + 4, sizeof(chunk_size));
+        if (chunk_size > size - off - 8) return false;
+        if (std::memcmp(bytes + off, "RTS0", 4) != 0) continue;
+        if (chunk_size < 24) return false;
+        uint32_t flags = 0;
+        std::memcpy(&flags, bytes + off + 8 + 20, sizeof(flags));
+        flags |= bits;
+        std::memcpy(bytes + off + 8 + 20, &flags, sizeof(flags));
+        constexpr uint8_t kZeroHash[16] = {};
+        if (std::memcmp(bytes + 4, kZeroHash, sizeof(kZeroHash)) != 0) {
+            uint32_t hash[4];
+            dxbc_checksum(bytes, size, hash);
+            std::memcpy(bytes + 4, hash, sizeof(hash));
+        }
+        return true;
+    }
+    return false;
+}
+
 }  // namespace rt::d3d12_xs
